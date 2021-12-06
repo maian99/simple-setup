@@ -28,8 +28,7 @@ import Wallet.Emulator (knownWallet)
 import Prelude
 
 {-
-Test is the data defines the script. In this case, DatumType of all outputs from
-Test script and RedeemerType is ().
+Test is the data defines the Test output. In this case, DatumType and RedeemerType of all Test outputs are ().
 -}
 data Test
 
