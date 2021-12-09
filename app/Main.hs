@@ -47,12 +47,14 @@ data CDPDatum
     , getLocked :: Integer
     , getMinted :: Integer }
 
-data CDPParams
-  = CDPParams
-    { getAToken :: Value.AssetClass 
-    , getAmount :: Integer }
-    deriving (FromJSON, ToJSON, Generic, Monoid, Semigroup)
+data CDPParams 
+  = OpenParams { oGetAToken :: Value.AssetClass  }
+  | WithdrawParams { wGetAToken :: Value.AssetClass, wGetAmount :: Integer }
+  | DepositParams { dGetAToken :: Value.AssetClass, dGetAmount :: Integer } 
+  | MintParams { mGetAToken :: Value.AssetClass, mGetAmount :: Integer }
+  | BurnParams { bGetAToken :: Value.AssetClass, bGetAmount :: Integer }  
   
+
 data CDP
 
 data CDPActions 
@@ -94,12 +96,13 @@ validatorScript = TScripts.validatorScript . compiledValidator
 validatorAddress :: CDPParams -> Ledger.Address
 validatorAddress = Ledger.scriptAddress . validatorScript
 
+type InitSchema = Contract.Endpoint "Init"     ()
+
 type CDPSchema = Contract.Endpoint "Open"     CDPParams
     Contract..\/ Contract.Endpoint "Deposit"  CDPParams
     Contract..\/ Contract.Endpoint "Withdraw" CDPParams
     Contract..\/ Contract.Endpoint "Mint"     CDPParams
     Contract..\/ Contract.Endpoint "Burn"     CDPParams
-    Contract..\/ Contract.Endpoint "Init"     ()
 
 getDatum :: PlutusTx.FromData b => Ledger.ChainIndexTxOut -> Maybe b
 getDatum o = preview Ledger.ciTxOutDatum o >>= rightToMaybe >>= (PlutusTx.fromBuiltinData . Ledger.getDatum)
@@ -150,7 +153,7 @@ containsAuthToken o = valid $ getDatum @CDPDatum o
 
 containsMyKey :: Ledger.PubKeyHash -> Ledger.ChainIndexTxOut -> Bool
 containsMyKey mk o = valid $ getDatum @CDPDatum o
-  where valid (Just (UserDatum k _ _)) = k == mk
+  where valid (Just (UserDatum k _ _)) = True
         valid _                        = False
 
 adaPrice :: Double
@@ -166,7 +169,7 @@ maintainRatio :: Integer -> Integer -> Bool
 maintainRatio lk mt = adaPrice * (fromIntegral lk) >= collateralRatio * iTSLAPrice * 1000000.0 * (fromIntegral mt)
 
 openCDP :: CDPParams -> Contract.Contract w s Contract.ContractError ()
-openCDP p@CDPParams{..} = do
+openCDP p@OpenParams{..} = do
   managers <- M.filter containsAuthToken <$> Contract.utxosAt (validatorAddress p)
   myKey <- Contract.ownPubKeyHash 
   let (oref, o) = head $ M.toList managers
@@ -182,13 +185,14 @@ openCDP p@CDPParams{..} = do
                         <> Constraints.mustPayToTheScript (ManagerDatum (myKey : users)) (getValue o)
                         <> Constraints.mustPayToTheScript (UserDatum myKey 0 0) (Ada.lovelaceValueOf 0)
     _ -> Contract.throwError "List of users is not available"
+openCDP _ = Contract.throwError "Wrong datum" 
                         
 depositCDP :: CDPParams -> Contract.Contract w s Contract.ContractError ()
-depositCDP p@CDPParams{..} = do
+depositCDP p@DepositParams{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter containsAuthToken <$> Contract.utxosAt (validatorAddress p)
   myOutputs <- M.filter (containsMyKey myKey) <$> Contract.utxosAt (validatorAddress p)
-  if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
+  if M.null myOutputs then Contract.throwError "This user has not openned a CDP@@"
    else do 
     let (_, o) = head $ M.toList managers
         (uoref, uo) = head $ M.toList myOutputs
@@ -198,7 +202,7 @@ depositCDP p@CDPParams{..} = do
       Just (ManagerDatum users) -> 
         case userDt of
           Just (UserDatum _ lk mt) ->
-            if not $ myKey `elem` users then Contract.throwError "This user has not openned a CDP"
+            if not $ myKey `elem` users then Contract.throwError "This user has not openned a CDP@@@@"
             else if getAmount < 0 then Contract.throwError "Cannot deposit negative amount"
             else void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
                  where lookups = Constraints.typedValidatorLookups (compiledValidator p)
@@ -208,9 +212,10 @@ depositCDP p@CDPParams{..} = do
                               <> Constraints.mustPayToTheScript (UserDatum myKey (lk + getAmount) mt) (getValue uo <> Ada.lovelaceValueOf getAmount) 
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
+depositCDP _ = Contract.throwError "Wrong datum"
 
 withdrawCDP :: CDPParams -> Contract.Contract w s Contract.ContractError ()
-withdrawCDP p@CDPParams{..} = do
+withdrawCDP p@WithdrawParams{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter containsAuthToken <$> Contract.utxosAt (validatorAddress p)
   myOutputs <- M.filter (containsMyKey myKey) <$> Contract.utxosAt (validatorAddress p)
@@ -236,9 +241,10 @@ withdrawCDP p@CDPParams{..} = do
                                    <> Constraints.mustPayToTheScript (UserDatum myKey (lk - getAmount) mt) (getValue uo <> Ada.lovelaceValueOf (-getAmount)) 
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
+withdrawCDP _ = Contract.throwError "Wrong datum"
 
 mintCDP :: CDPParams -> Contract.Contract w s Contract.ContractError ()
-mintCDP p@CDPParams{..} = do
+mintCDP p@MintParams{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter containsAuthToken <$> Contract.utxosAt (validatorAddress p)
   myOutputs <- M.filter (containsMyKey myKey) <$> Contract.utxosAt (validatorAddress p)
@@ -266,9 +272,10 @@ mintCDP p@CDPParams{..} = do
                               <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt + getAmount)) (getValue uo)
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
+mintCDP _ = Contract.throwError "Wrong datum"
 
 burnCDP :: CDPParams -> Contract.Contract w s Contract.ContractError ()
-burnCDP p@CDPParams{..} = do
+burnCDP p@BurnParams{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter containsAuthToken <$> Contract.utxosAt (validatorAddress p)
   myOutputs <- M.filter (containsMyKey myKey) <$> Contract.utxosAt (validatorAddress p)
@@ -296,6 +303,7 @@ burnCDP p@CDPParams{..} = do
                               <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt - getAmount)) (getValue uo)
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
+burnCDP _ = Contract.throwError "Wrong datum"
 
 fromCurrencyError :: Currency.CurrencyError -> Contract.ContractError
 fromCurrencyError = \case
@@ -308,48 +316,65 @@ initOutput = do
   let lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams p 0)
       p       = Value.AssetClass (aTokenCurrencySymbol, aTokenName)
       val     = Value.assetClassValue (Value.assetClass cs aTokenName) 1
-      tx      = Constraints.mustMintValue val 
-             <> Constraints.mustPayToTheScript (ManagerDatum []) val
+      tx      = Constraints.mustPayToTheScript (ManagerDatum []) val
   void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
   return $ Value.AssetClass (aTokenCurrencySymbol, aTokenName)
 
-initEndpoint :: Contract.Contract (Last Value.AssetClass) CDPSchema Contract.ContractError ()
+initEndpoint :: Contract.Contract (Last Value.AssetClass) InitSchema Contract.ContractError ()
 initEndpoint = Contract.selectList [init'] <> initEndpoint
   where
     init'     = Contract.endpoint @"Init"     $ \_ -> Contract.handleError Contract.logError $ initOutput >>= Contract.tell . Last . Just
     
-myEndpoints :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
-myEndpoints = Contract.selectList [open', deposit', withdraw', mint', burn'] >> myEndpoints
+openEndpoint :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
+openEndpoint = Contract.selectList [open'] >> openEndpoint
   where   
     open'     = Contract.endpoint @"Open"     $ \a -> Contract.handleError Contract.logError $ openCDP a
-    deposit'  = Contract.endpoint @"Deposit"  $ \a -> Contract.handleError Contract.logError $ depositCDP a
-    withdraw' = Contract.endpoint @"Withdraw" $ \a -> Contract.handleError Contract.logError $ withdrawCDP a
-    mint'     = Contract.endpoint @"Mint"     $ \a -> Contract.handleError Contract.logError $ mintCDP a
-    burn'     = Contract.endpoint @"Burn"     $ \a -> Contract.handleError Contract.logError $ burnCDP a
 
+depositEndpoint :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
+depositEndpoint = Contract.selectList [deposit'] >> depositEndpoint
+  where   
+    deposit'  = Contract.endpoint @"Deposit"  $ \a -> Contract.handleError Contract.logError $ depositCDP a
+    
+withdrawEndpoint :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
+withdrawEndpoint = Contract.selectList [withdraw'] >> withdrawEndpoint
+  where
+    withdraw' = Contract.endpoint @"Withdraw" $ \a -> Contract.handleError Contract.logError $ withdrawCDP a   
+   
+mintEndpoint :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
+mintEndpoint = Contract.selectList [mint'] >> mintEndpoint
+  where   
+    mint'     = Contract.endpoint @"Mint"     $ \a -> Contract.handleError Contract.logError $ mintCDP a
+
+burnEndpoint :: Contract.Contract CDPParams CDPSchema Contract.ContractError ()
+burnEndpoint = Contract.selectList [burn'] >> burnEndpoint
+  where   
+    burn'     = Contract.endpoint @"Burn"     $ \a -> Contract.handleError Contract.logError $ burnCDP a
+   
 
 
 main :: IO ()
 main = Trace.runEmulatorTraceIO $ do
-  w1 <- Trace.activateContractWallet (knownWallet 1) initEndpoint
-  w2 <- Trace.activateContractWallet (knownWallet 1) myEndpoints	
+  i1 <- Trace.activateContractWallet (knownWallet 1) initEndpoint
+  o1 <- Trace.activateContractWallet (knownWallet 1) openEndpoint
+  d1 <- Trace.activateContractWallet (knownWallet 1) depositEndpoint
+  w1 <- Trace.activateContractWallet (knownWallet 1) withdrawEndpoint
+  m1 <- Trace.activateContractWallet (knownWallet 1) mintEndpoint
+  b1 <- Trace.activateContractWallet (knownWallet 1) burnEndpoint
+	
+  Trace.callEndpoint @"Init" i1 ()
+  void $ Trace.waitNSlots 1
 
-  Trace.callEndpoint @"Init" w1 ()
+  p <- getCDPParam i1
+  
+  Trace.callEndpoint @"Open" o1 $ OpenParams p
   void $ Trace.waitNSlots 1
-  
-  p <- getCDPParam w1
-  
-  Trace.callEndpoint @"Open" w2 $ CDPParams p 0
+  return ()
+ 
+  Trace.callEndpoint @"Deposit" d1 $ DepositParams p 1000000
   void $ Trace.waitNSlots 1
-  
-  Trace.callEndpoint @"Deposit" w2 $ CDPParams p 10000000
-  void $ Trace.waitNSlots 1
-  
-  Trace.callEndpoint @"Mint" w2 $ CDPParams p 1
-  void $ Trace.waitNSlots 1
-  
+
   where
-    getCDPParam :: Trace.ContractHandle (Last Value.AssetClass) CDPSchema Contract.ContractError -> Trace.EmulatorTrace Value.AssetClass
+    getCDPParam :: Trace.ContractHandle (Last Value.AssetClass) InitSchema Contract.ContractError -> Trace.EmulatorTrace Value.AssetClass
     getCDPParam h = do
       Trace.observableState h >>= \case
         Last (Just p) -> return p
