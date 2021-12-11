@@ -35,6 +35,7 @@ import qualified Ledger.Typed.Scripts as TScripts
 import qualified Ledger.Value as Value
 import qualified Plutus.Trace.Emulator as Trace
 import qualified PlutusTx
+import qualified PlutusTx.Trace as PTrace
 import Wallet.Emulator (knownWallet)
 
 import Prelude
@@ -52,7 +53,7 @@ data EPT
     { getAToken :: Value.AssetClass
     , getUToken :: Value.AssetClass
     , getAmount :: Integer } 
-  deriving (FromJSON, ToJSON, Monoid, Generic, Semigroup)
+  deriving (FromJSON, ToJSON, Generic)
 
 data CDPParams
   = CDPParams 
@@ -91,12 +92,99 @@ instance TScripts.ValidatorTypes CDP where
 
 {-# INLINEABLE mkValidator #-}
 mkValidator :: CDPParams -> CDPDatum -> CDPActions -> Ledger.ScriptContext -> Bool
-mkValidator nft _ a _ = case a of 
-  MkOpen (Open _) -> True
-  MkDeposit (Deposit _ _) -> True
-  MkWithdraw (Withdraw _ _) -> True
-  MkMint (Mint _ _) -> True
-  MkBurn (Burn _ _) -> True
+mkValidator CDPParams{..} d a ctx = 
+  case a of 
+    MkOpen (Open k) -> 
+      PTrace.traceIfFalse "Inputs do not contain the real Manager" (inVal == nftVal) &&
+      PTrace.traceIfFalse "Wrong signature" (Ledger.txSignedBy info k) -- &&
+--      PTrace.traceIfFalse
+    MkDeposit (Deposit k a) -> True
+    MkWithdraw (Withdraw k a) -> True
+    MkMint (Mint k a) -> True
+    MkBurn (Burn k a) -> True
+  where 
+    info :: Ledger.TxInfo
+    info = Ledger.scriptContextTxInfo ctx
+    
+    input :: Ledger.TxInInfo
+    input =
+      let
+        isScriptInput i = case (Ledger.txOutDatumHash . Ledger.txInInfoResolved) i of
+            Nothing -> False
+            Just _  -> True
+        xs = [i | i <- Ledger.txInfoInputs info, isScriptInput i]
+      in
+        case xs of
+            [i] -> i
+            _   -> PTrace.traceError "expected exactly one script input"
+            
+    inVal :: Value.Value
+    inVal = Ledger.txOutValue . Ledger.txInInfoResolved $ input
+    
+    nftVal :: Value.Value
+    nftVal = (Value.assetClassValue ogetAToken 1)
+    
+    atkVal :: Value.Value
+    atkVal = (Value.assetClassValue ogetUToken 1)
+      
+    ownOutput :: [Ledger.TxOut]
+    ownOutput = Ledger.getContinuingOutputs ctx
+    
+    ownInput :: Ledger.TxOut
+    ownInput = case Ledger.findOwnInput ctx of
+      Nothing -> PTrace.traceError "Expected input"
+      Just i -> Ledger.txInInfoResolved i
+    
+    ownManagerOutput :: Ledger.TxOut
+    ownManagerOutput = case filter isManager ownOutput of
+      [o] -> o
+      _   -> PTrace.traceError "Expected exactly one Manager output"
+    
+    outUserOutput :: Ledger.TxOut
+    outUserOutput = case filter isUser ownOutput of
+      [o] -> o
+      _   -> PTrace.traceError "Expected exactly one User output"
+      
+    outManagerDatum :: CDPDatum
+    outManagerDatum = case cdpDatum ownManagerOutput (`Ledger.findDatum` info) of
+      Just a -> a
+      _ -> PTrace.traceError "Impossible case"
+
+    inManagerDatum :: CDPDatum
+    inManagerDatum = case cdpDatum d (`Ledger.findDatum` info) of
+      Just a -> a
+      _ -> PTrace.traceError "Not manager datum"
+    
+    
+    ownUserDatum :: CDPDatum
+    ownUserDatum = case cdpDatum ownUserOutput (`Ledger.findDatum` info) of
+      Just a -> a
+      _ -> PTrace.traceError "Impossible case"
+    
+    managerDatumList :: Ledger.PubKeyHash -> Bool
+    managerDatumList k = case inManagerDatum of
+      ManagerDatum l -> 
+        case outManagerDatum of
+          ManagerDatum (a:as) -> a == k && l == as
+          _ -> PTrace.traceError "Invalid manager output datum"
+      _ -> PTrace.traceError "Wrong manager input datum"
+    
+    isManager :: Ledger.TxOut -> Bool
+    isManager os = case cdpDatum os (`Ledger.findDatum` info) of
+      Just (ManagerDatum _) -> True
+      _ -> False
+
+    isUser :: Ledger.TxOut -> Bool
+    isUser os = case cdpDatum os (`Ledger.findDatum` info) of
+      Just (UserDatum _ _ _) -> True
+      _ -> False
+
+    cdpDatum :: Ledger.TxOut  -> (Scripts.DatumHash -> Maybe Scripts.Datum) -> Maybe CDPDatum
+    cdpDatum o f = do
+      dh <- Ledger.txOutDatum o
+      Scripts.Datum d <- f dh
+      PlutusTx.fromBuiltinData d
+    
 
 compiledValidator :: CDPParams -> TScripts.TypedValidator CDP
 compiledValidator nft = 
@@ -150,6 +238,20 @@ uTokenName = "iTSLA-User-Atoken"
 {-# INLINEABLE mkPolicy #-}
 mkPolicy :: () -> Ledger.ScriptContext -> Bool
 mkPolicy _ _ = True
+{-
+  PTrace.traceIfFalse "Wrong amount minted" checkMintedAmount
+  where 
+    info :: Ledger.TxInfo
+    info = Ledger.scriptContextTxInfo ctx
+    
+    hasUTxO :: Bool
+    hasUTxO any (\i -> Ledger.txInInfoOutRef i == utxo) $ txInfoInputs info
+    
+    checkMintedAmount :: Bool
+    checkMintedAmount case flattenValue (Ledger.txInfoMint info) of
+      [(_, tn', amt)] -> tn' == tn && amt == 1
+      _               -> False
+-}
 
 mintingPolicy :: TScripts.MintingPolicy
 mintingPolicy =
@@ -200,9 +302,12 @@ openCDP EPT{..} = do
            where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
                         <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
                         <> Constraints.unspentOutputs (M.fromList [(oref, o)])
-                 tx      = Constraints.mustSpendScriptOutput oref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ Open myKey)
+                        <> Constraints.mintingPolicy uMintingPolicy
+                 val     = Value.assetClassValue (Value.assetClass uCurrencySymbol uTokenName) 1
+                 tx      = Constraints.mustMintValue val
+                        <> Constraints.mustSpendScriptOutput oref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkOpen $ Open myKey)
                         <> Constraints.mustPayToTheScript (ManagerDatum (myKey : users)) (getValue o)
-                        <> Constraints.mustPayToTheScript (UserDatum myKey 0 0) (Ada.lovelaceValueOf 0)
+                        <> Constraints.mustPayToTheScript (UserDatum myKey 0 0) val
     _ -> Contract.throwError "List of users is not available"
                         
 depositCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
@@ -226,7 +331,7 @@ depositCDP EPT{..} = do
                  where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
                               <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
                               <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                       tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ Deposit myKey getAmount)
+                       tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkDeposit $ Deposit myKey getAmount)
                               <> Constraints.mustPayToTheScript (UserDatum myKey (lk + getAmount) mt) (getValue uo <> Ada.lovelaceValueOf getAmount) 
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
@@ -254,7 +359,7 @@ withdrawCDP EPT{..} = do
                       where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
                                    <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
                                    <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                            tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ Withdraw myKey getAmount)
+                            tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkWithdraw $ Withdraw myKey getAmount)
                                    <> Constraints.mustPayToTheScript (UserDatum myKey (lk - getAmount) mt) (getValue uo <> Ada.lovelaceValueOf (-getAmount)) 
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
@@ -284,7 +389,7 @@ mintCDP EPT{..} = do
                               <> Constraints.mintingPolicy mintingPolicy
                        val = Value.assetClassValue (Value.assetClass myCurrencySymbol myTokenName) getAmount
                        tx      = Constraints.mustMintValue val
-                              <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ Mint myKey getAmount)
+                              <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkMint $ Mint myKey getAmount)
                               <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt + getAmount)) (getValue uo)
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
@@ -314,7 +419,7 @@ burnCDP EPT{..} = do
                               <> Constraints.mintingPolicy mintingPolicy
                        val     = Value.assetClassValue (Value.assetClass myCurrencySymbol myTokenName) (-getAmount)
                        tx      = Constraints.mustMintValue val
-                              <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ Burn myKey getAmount)
+                              <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkBurn $ Burn myKey getAmount)
                               <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt - getAmount)) (getValue uo)
           _ -> Contract.throwError "User's datum is not available"
       _ -> Contract.throwError "List of users is not available"
@@ -339,7 +444,7 @@ initEndpoint = Contract.selectList [init'] <> initEndpoint
   where
     init'     = Contract.endpoint @"Init"     $ \_ -> Contract.handleError Contract.logError $ initOutput >>= Contract.tell . Last . Just
 
-myEndpoints :: Contract.Contract EPT CDPSchema Contract.ContractError ()
+myEndpoints :: Contract.Contract () CDPSchema Contract.ContractError ()
 myEndpoints = Contract.selectList [open', deposit', withdraw', mint', burn'] >> myEndpoints
   where   
     open'     = Contract.endpoint @"Open"     $ \a -> Contract.handleError Contract.logError $ openCDP a
@@ -348,14 +453,12 @@ myEndpoints = Contract.selectList [open', deposit', withdraw', mint', burn'] >> 
     mint'     = Contract.endpoint @"Mint"     $ \a -> Contract.handleError Contract.logError $ mintCDP a
     burn'     = Contract.endpoint @"Burn"     $ \a -> Contract.handleError Contract.logError $ burnCDP a
  
-   
-
-
 main :: IO ()
 main = Trace.runEmulatorTraceIO $ do
   i1 <- Trace.activateContractWallet (knownWallet 1) initEndpoint
   o1 <- Trace.activateContractWallet (knownWallet 1) myEndpoints
-	
+  o2 <- Trace.activateContractWallet (knownWallet 2) myEndpoints
+
   Trace.callEndpoint @"Init" i1 ()
   void $ Trace.waitNSlots 1
 
@@ -364,10 +467,6 @@ main = Trace.runEmulatorTraceIO $ do
   
   Trace.callEndpoint @"Open" o1 $ EPT p u 0
   void $ Trace.waitNSlots 1
- --  return ()
- 
-  --Trace.callEndpoint @"Deposit" o1 $ EPT p u 1000000
-  --void $ Trace.waitNSlots 1
 
   where
     getCDPParam :: Trace.ContractHandle (Last Value.AssetClass) InitSchema Contract.ContractError -> Trace.EmulatorTrace Value.AssetClass
