@@ -35,6 +35,8 @@ import qualified Ledger.Typed.Scripts as TScripts
 import qualified Ledger.Value as Value
 import qualified Plutus.Trace.Emulator as Trace
 import qualified PlutusTx
+import qualified PlutusTx.Eq as PEq
+import qualified PlutusTx.List as PList
 import qualified PlutusTx.Trace as PTrace
 import Wallet.Emulator (knownWallet)
 
@@ -96,8 +98,10 @@ mkValidator CDPParams{..} d a ctx =
   case a of 
     MkOpen (Open k) -> 
       PTrace.traceIfFalse "Inputs do not contain the real Manager" (inVal == nftVal) &&
-      PTrace.traceIfFalse "Wrong signature" (Ledger.txSignedBy info k) -- &&
---      PTrace.traceIfFalse
+      PTrace.traceIfFalse "Wrong signature" (Ledger.txSignedBy info k) &&
+      PTrace.traceIfFalse "Invalid manager datum" (managerDatumList k) &&
+      PTrace.traceIfFalse "Invalid user datum" (checkUserDatum k 0 0)  &&
+      PTrace.traceIfFalse "Invalid user output value" (checkUserValue atkVal)
     MkDeposit (Deposit k a) -> True
     MkWithdraw (Withdraw k a) -> True
     MkMint (Mint k a) -> True
@@ -121,6 +125,9 @@ mkValidator CDPParams{..} d a ctx =
     inVal :: Value.Value
     inVal = Ledger.txOutValue . Ledger.txInInfoResolved $ input
     
+    checkUserValue :: Value.Value -> Bool
+    checkUserValue v = v == (Ledger.txOutValue outUserOutput)
+    
     nftVal :: Value.Value
     nftVal = (Value.assetClassValue ogetAToken 1)
     
@@ -136,12 +143,12 @@ mkValidator CDPParams{..} d a ctx =
       Just i -> Ledger.txInInfoResolved i
     
     ownManagerOutput :: Ledger.TxOut
-    ownManagerOutput = case filter isManager ownOutput of
+    ownManagerOutput = case PList.filter isManager ownOutput of
       [o] -> o
       _   -> PTrace.traceError "Expected exactly one Manager output"
     
     outUserOutput :: Ledger.TxOut
-    outUserOutput = case filter isUser ownOutput of
+    outUserOutput = case PList.filter isUser ownOutput of
       [o] -> o
       _   -> PTrace.traceError "Expected exactly one User output"
       
@@ -151,13 +158,12 @@ mkValidator CDPParams{..} d a ctx =
       _ -> PTrace.traceError "Impossible case"
 
     inManagerDatum :: CDPDatum
-    inManagerDatum = case cdpDatum d (`Ledger.findDatum` info) of
-      Just a -> a
+    inManagerDatum = case d of
+      ManagerDatum a -> ManagerDatum a
       _ -> PTrace.traceError "Not manager datum"
     
-    
-    ownUserDatum :: CDPDatum
-    ownUserDatum = case cdpDatum ownUserOutput (`Ledger.findDatum` info) of
+    outUserDatum :: CDPDatum
+    outUserDatum = case cdpDatum outUserOutput (`Ledger.findDatum` info) of
       Just a -> a
       _ -> PTrace.traceError "Impossible case"
     
@@ -165,9 +171,14 @@ mkValidator CDPParams{..} d a ctx =
     managerDatumList k = case inManagerDatum of
       ManagerDatum l -> 
         case outManagerDatum of
-          ManagerDatum (a:as) -> a == k && l == as
+          ManagerDatum (a:as) -> a PEq.== k && l PEq.== as
           _ -> PTrace.traceError "Invalid manager output datum"
       _ -> PTrace.traceError "Wrong manager input datum"
+    
+    checkUserDatum :: Ledger.PubKeyHash -> Integer -> Integer -> Bool
+    checkUserDatum k lk mt = case outUserDatum of
+      UserDatum k' lk' mt' -> k PEq.== k' && lk' PEq.== lk && mt' PEq.== mt
+      _ -> PTrace.traceError "Wrong user input datum"
     
     isManager :: Ledger.TxOut -> Bool
     isManager os = case cdpDatum os (`Ledger.findDatum` info) of
@@ -219,8 +230,54 @@ aTokenName = "iTSLA-AuthToken"
 
 {-# INLINEABLE uMkPolicy #-}
 uMkPolicy :: () -> Ledger.ScriptContext -> Bool
-uMkPolicy _ _ = True
+uMkPolicy _ ctx = PTrace.traceIfFalse "TOI BI DIEN" checkManagerDatum
+  where
+    info :: Ledger.TxInfo
+    info = Ledger.scriptContextTxInfo ctx
+    
+    input :: Ledger.TxInInfo
+    input =
+      let
+        isScriptInput i = case (Ledger.txOutDatumHash . Ledger.txInInfoResolved) i of
+            Nothing -> False
+            Just _  -> True
+        xs = [i | i <- Ledger.txInfoInputs info, isScriptInput i]
+      in
+        case xs of
+            [i] -> i
+            _   -> PTrace.traceError "expected exactly one script input"
+            
+    managerInput :: Ledger.TxOut
+    managerInput = Ledger.txInInfoResolved input
+            
+    ownOutput :: [Ledger.TxOut]
+    ownOutput = Ledger.getContinuingOutputs ctx
+    
+    managerOutput :: Ledger.TxOut 
+    managerOutput = case PList.filter isManager ownOutput of
+      [o] -> o
+      _   -> PTrace.traceError "Expected exactly one Manager output"
+    
+    checkManagerDatum :: Bool
+    checkManagerDatum = 
+      case cdpDatum managerInput (`Ledger.findDatum` info) of
+        Just (ManagerDatum l) -> 
+          case cdpDatum managerOutput (`Ledger.findDatum` info) of
+            Just (ManagerDatum a) -> l PEq./= a
+            _ -> PTrace.traceError "Invalid manager output datum TOI BI DIEN"
+        _ -> PTrace.traceError "Invalid manager input datum"
 
+    isManager :: Ledger.TxOut -> Bool
+    isManager os = case cdpDatum os (`Ledger.findDatum` info) of
+      Just (ManagerDatum _) -> True
+      _ -> False
+
+    cdpDatum :: Ledger.TxOut  -> (Scripts.DatumHash -> Maybe Scripts.Datum) -> Maybe CDPDatum
+    cdpDatum o f = do
+      dh <- Ledger.txOutDatum o
+      Scripts.Datum d <- f dh
+      PlutusTx.fromBuiltinData d
+    
 uMintingPolicy :: TScripts.MintingPolicy
 uMintingPolicy =
   Ledger.mkMintingPolicyScript
@@ -325,7 +382,7 @@ depositCDP EPT{..} = do
       Just (ManagerDatum users) -> 
         case userDt of
           Just (UserDatum _ lk mt) ->
-            if not $ myKey `elem` users then Contract.throwError "This user has not openned a CDP@@@@"
+            if not $ myKey `elem` users then Contract.throwError "This user has not openned a CDP"
             else if getAmount < 0 then Contract.throwError "Cannot deposit negative amount"
             else void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
                  where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
