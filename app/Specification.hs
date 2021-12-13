@@ -85,6 +85,7 @@ mkValidator CDPParams{..} d act ctx =
     MkOpen k ->
       case d of
         ManagerDatum l ->
+          PTrace.traceIfFalse "User has already openned a CDP" (not $ k `PL.elem` l) &&
           PTrace.traceIfFalse "Inputs do not contain the real Manager" (inVal == nftVal) &&
           PTrace.traceIfFalse "Wrong signature" (Ledger.txSignedBy info k) &&
           PTrace.traceIfFalse "Invalid manager datum" (managerDatumList l k) &&
@@ -240,7 +241,7 @@ getValue :: Ledger.ChainIndexTxOut -> Ledger.Value
 getValue = view Ledger.ciTxOutValue
 
 aTokenName :: Value.TokenName
-aTokenName = "iTSLA-AuthToken"
+aTokenName = "Manager-token"
 
 {-# INLINEABLE uMkPolicy #-}
 uMkPolicy :: Value.AssetClass -> () -> Ledger.ScriptContext -> Bool
@@ -284,7 +285,7 @@ uCurrencySymbol :: Value.AssetClass -> Value.CurrencySymbol
 uCurrencySymbol = Value.mpsSymbol . uMintingPolicyHash
 
 uTokenName :: Value.TokenName
-uTokenName = "iTSLA-User-Atoken"
+uTokenName = "User-token"
 
 {-# INLINEABLE mkPolicy #-}
 mkPolicy :: Value.AssetClass -> () -> Ledger.ScriptContext -> Bool
@@ -351,124 +352,135 @@ containsMyKey atk mk o = valid $ getDatum @CDPDatum o
 openCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
 openCDP EPT{..} = do
   managers <- M.filter (containsAuthToken getAToken) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
-  myKey <- Contract.ownPubKeyHash 
-  let (oref, o) = head $ M.toList managers
-      mbUsers = getDatum @CDPDatum o
-  case mbUsers of
-    Just (ManagerDatum users) -> 
-      void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
-      where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
-                   <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
-                   <> Constraints.unspentOutputs (M.fromList [(oref, o)])
-                   <> Constraints.mintingPolicy (uMintingPolicy getAToken)
-            val     = Value.assetClassValue (Value.assetClass (uCurrencySymbol getAToken) uTokenName) 1
-            tx      = Constraints.mustMintValue val
-                   <> Constraints.mustSpendScriptOutput oref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkOpen myKey)
-                   <> Constraints.mustPayToTheScript (ManagerDatum (myKey : users)) (getValue o)
-                   <> Constraints.mustPayToTheScript (UserDatum myKey 0 0) (val <> Ada.lovelaceValueOf 0)
-    _ -> Contract.throwError "List of users is not available"
+  myKey <- Contract.ownPubKeyHash
+  case M.null managers of
+   True -> Contract.throwError "The protocol has not been initiated"
+   False ->
+    case mbUsers of
+      Just (ManagerDatum users) -> 
+        void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
+        where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
+                     <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
+                     <> Constraints.unspentOutputs (M.fromList [(oref, o)])
+                     <> Constraints.mintingPolicy (uMintingPolicy getAToken)
+              val     = Value.assetClassValue (Value.assetClass (uCurrencySymbol getAToken) uTokenName) 1
+              tx      = Constraints.mustMintValue val
+                     <> Constraints.mustSpendScriptOutput oref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkOpen myKey)
+                     <> Constraints.mustPayToTheScript (ManagerDatum (myKey : users)) (getValue o)
+                     <> Constraints.mustPayToTheScript (UserDatum myKey 0 0) (val <> Ada.lovelaceValueOf 0)
+      _ -> Contract.throwError "List of users is not available"
+    where (oref, o) = head $ M.toList managers
+          mbUsers = getDatum @CDPDatum o
                         
 depositCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
 depositCDP EPT{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter (containsAuthToken getAToken) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
   myOutputs <- M.filter (containsMyKey getUToken myKey) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
-  if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
-   else do 
-    let (_, o) = head $ M.toList managers
-        (uoref, uo) = head $ M.toList myOutputs
-        mbUsers = getDatum @CDPDatum o
-        userDt  = getDatum @CDPDatum uo
-    case mbUsers of
-      Just (ManagerDatum _) -> 
-        case userDt of
-          Just (UserDatum _ lk mt) ->
-            void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
-            where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
-                         <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
-                         <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                  tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkBalance getAmount)
-                         <> Constraints.mustPayToTheScript (UserDatum myKey (lk + getAmount) mt) (getValue uo <> Ada.lovelaceValueOf getAmount) 
-          _ -> Contract.throwError "User's datum is not available"
-      _ -> Contract.throwError "List of users is not available"
+  if M.null managers then Contract.throwError "The protocol has not been initiated"
+   else 
+    if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
+    else do 
+     let (_, o) = head $ M.toList managers
+         (uoref, uo) = head $ M.toList myOutputs
+         mbUsers = getDatum @CDPDatum o
+         userDt  = getDatum @CDPDatum uo
+     case mbUsers of
+       Just (ManagerDatum _) -> 
+         case userDt of
+           Just (UserDatum _ lk mt) ->
+             void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
+             where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
+                          <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
+                          <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
+                   tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkBalance getAmount)
+                          <> Constraints.mustPayToTheScript (UserDatum myKey (lk + getAmount) mt) (getValue uo <> Ada.lovelaceValueOf getAmount) 
+           _ -> Contract.throwError "User's datum is not available"
+       _ -> Contract.throwError "List of users is not available"
 
 withdrawCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
 withdrawCDP EPT{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter (containsAuthToken getAToken) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
   myOutputs <- M.filter (containsMyKey getUToken myKey) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
-  if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
-   else do
-    let (_, o) = head $ M.toList managers
-        (uoref, uo) = head $ M.toList myOutputs
-        mbUsers = getDatum @CDPDatum o
-        userDt  = getDatum @CDPDatum uo
-    case mbUsers of
-      Just (ManagerDatum _) -> 
-        case userDt of
-          Just (UserDatum _ lk mt) ->
-            void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
-            where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
-                         <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
-                         <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                  tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkBalance (-getAmount))
-                         <> Constraints.mustPayToTheScript (UserDatum myKey (lk - getAmount) mt) (getValue uo <> Ada.lovelaceValueOf (-getAmount)) 
-          _ -> Contract.throwError "User's datum is not available"
-      _ -> Contract.throwError "List of users is not available"
+  if M.null managers then Contract.throwError "The protocol has not been initiated"
+   else 
+    if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
+    else do
+      let (_, o) = head $ M.toList managers
+          (uoref, uo) = head $ M.toList myOutputs
+          mbUsers = getDatum @CDPDatum o
+          userDt  = getDatum @CDPDatum uo
+      case mbUsers of
+       Just (ManagerDatum _) -> 
+         case userDt of
+           Just (UserDatum _ lk mt) ->
+             void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
+             where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
+                          <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
+                          <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
+                   tx      = Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkBalance (-getAmount))
+                          <> Constraints.mustPayToTheScript (UserDatum myKey (lk - getAmount) mt) (getValue uo <> Ada.lovelaceValueOf (-getAmount)) 
+           _ -> Contract.throwError "User's datum is not available"
+       _ -> Contract.throwError "List of users is not available"
 
 mintCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
 mintCDP EPT{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter (containsAuthToken getAToken) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
   myOutputs <- M.filter (containsMyKey getUToken myKey) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
-  if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
-   else do
-    let (_, o) = head $ M.toList managers
-        (uoref, uo) = head $ M.toList myOutputs
-        mbUsers = getDatum @CDPDatum o
-        userDt  = getDatum @CDPDatum uo
-    case mbUsers of
-      Just (ManagerDatum _) -> 
-        case userDt of
-          Just (UserDatum _ lk mt) ->
-            void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
-            where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
-                         <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
-                         <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                         <> Constraints.mintingPolicy (mintingPolicy getUToken)
-                  val = Value.assetClassValue (Value.assetClass (myCurrencySymbol getUToken) myTokenName) getAmount
-                  tx      = Constraints.mustMintValue val
-                         <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkToken getAmount)
-                         <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt + getAmount)) (getValue uo)
-          _ -> Contract.throwError "User's datum is not available"
-      _ -> Contract.throwError "List of users is not available"
+  if M.null managers then Contract.throwError "The protocol has not been initiated"
+   else 
+    if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
+    else do
+      let (_, o) = head $ M.toList managers
+          (uoref, uo) = head $ M.toList myOutputs
+          mbUsers = getDatum @CDPDatum o
+          userDt  = getDatum @CDPDatum uo
+      case mbUsers of
+        Just (ManagerDatum _) -> 
+          case userDt of
+            Just (UserDatum _ lk mt) ->
+              void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
+              where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
+                           <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
+                           <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
+                           <> Constraints.mintingPolicy (mintingPolicy getUToken)
+                    val = Value.assetClassValue (Value.assetClass (myCurrencySymbol getUToken) myTokenName) getAmount
+                    tx      = Constraints.mustMintValue val
+                           <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkToken getAmount)
+                           <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt + getAmount)) (getValue uo)
+            _ -> Contract.throwError "User's datum is not available"
+        _ -> Contract.throwError "List of users is not available"
 
 burnCDP :: EPT -> Contract.Contract w s Contract.ContractError ()
 burnCDP EPT{..} = do
   myKey <- Contract.ownPubKeyHash
   managers <- M.filter (containsAuthToken getAToken) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
   myOutputs <- M.filter (containsMyKey getUToken myKey) <$> Contract.utxosAt (validatorAddress $ CDPParams getAToken getUToken)
-  if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
-   else do
-    let (_, o) = head $ M.toList managers
-        (uoref, uo) = head $ M.toList myOutputs
-        mbUsers = getDatum @CDPDatum o
-        userDt  = getDatum @CDPDatum uo
-    case mbUsers of
-      Just (ManagerDatum _) -> 
-        case userDt of
-          Just (UserDatum _ lk mt) ->
-            void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
-            where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
-                         <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
-                         <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
-                         <> Constraints.mintingPolicy (mintingPolicy getUToken)
-                  val     = Value.assetClassValue (Value.assetClass (myCurrencySymbol getUToken) myTokenName) (-getAmount)
-                  tx      = Constraints.mustMintValue val
-                         <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkToken (-getAmount))
-                         <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt - getAmount)) (getValue uo)
-          _ -> Contract.throwError "User's datum is not available"
-      _ -> Contract.throwError "List of users is not available"
+  if M.null managers then Contract.throwError "The protocol has not been initiated"
+   else 
+    if M.null myOutputs then Contract.throwError "This user has not openned a CDP"
+    else do
+      let (_, o) = head $ M.toList managers
+          (uoref, uo) = head $ M.toList myOutputs
+          mbUsers = getDatum @CDPDatum o
+          userDt  = getDatum @CDPDatum uo
+      case mbUsers of
+        Just (ManagerDatum _) -> 
+          case userDt of
+            Just (UserDatum _ lk mt) ->
+              void $ Contract.submitTxConstraintsWith lookups tx >>= Contract.awaitTxConfirmed . Ledger.getCardanoTxId
+              where lookups = Constraints.typedValidatorLookups (compiledValidator $ CDPParams getAToken getUToken)
+                           <> Constraints.otherScript (validatorScript $ CDPParams getAToken getUToken)
+                           <> Constraints.unspentOutputs (M.fromList [(uoref, uo)])
+                           <> Constraints.mintingPolicy (mintingPolicy getUToken)
+                    val     = Value.assetClassValue (Value.assetClass (myCurrencySymbol getUToken) myTokenName) (-getAmount)
+                    tx      = Constraints.mustMintValue val
+                           <> Constraints.mustSpendScriptOutput uoref (Scripts.Redeemer $ PlutusTx.toBuiltinData $ MkToken (-getAmount))
+                           <> Constraints.mustPayToTheScript (UserDatum myKey lk (mt - getAmount)) (getValue uo)
+            _ -> Contract.throwError "User's datum is not available"
+        _ -> Contract.throwError "List of users is not available"
       
 fromCurrencyError :: Currency.CurrencyError -> Contract.ContractError
 fromCurrencyError = \case
