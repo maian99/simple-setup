@@ -6,27 +6,28 @@ executable simple-setup
     main-is:          Main.hs
 
     build-depends:    
-      base >= 4.9 && < 5,
-      aeson,
-      bytestring,
-      containers,
-      data-default,
-      either,
-      freer-extras,
-      freer-simple,
-      hashable < 1.3.4,
-      lens,
-      playground-common,
-      plutus-contract,
-      plutus-ledger,
-      plutus-ledger-api,
-      plutus-tx,
-      plutus-tx-plugin,
-      plutus-use-cases,
-      plutus-pab,
-      scientific,
-      tasty,
-      text
+      , base >= 4.9 && < 5
+      , aeson
+      , bytestring
+      , containers
+      , data-default
+      , either
+      , freer-extras
+      , freer-simple
+      , hashable < 1.3.4
+      , lens
+      , playground-common
+      , plutus-contract
+      , plutus-ledger
+      , plutus-ledger-api
+      , plutus-ledger-constraints
+      , plutus-tx
+      , plutus-tx-plugin
+      , plutus-use-cases
+      , plutus-pab
+      , scientific
+      , tasty
+      , text
     hs-source-dirs:   app
     ghc-options: -Wall -Werror -fobject-code -fno-ignore-interface-pragmas -fno-omit-interface-pragmas
                  -fplugin-opt PlutusTx.Plugin:defer-errors
