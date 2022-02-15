@@ -10,8 +10,6 @@ A sample installation on Ubuntu is:
 sudo apt update && sudo apt install libsodium-dev libsystemd-dev
 ```
 
-Recommend using ghc 8.10.4.
-
 ## Build
 
 ```sh

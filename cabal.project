@@ -1,22 +1,25 @@
+index-state: 2022-01-22T00:00:00Z
 packages: ./simple-setup.cabal
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/cardano-addresses
-  tag: 806a2244f5de71b6cedb29a47cc68740fdc5cb18
+  tag: d2f86caa085402a953920c6714a0de6a50b655ec
   subdir:
+    command-line
     core
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/cardano-base
-  tag: 4ea7e2d927c9a7f78ddc69738409a5827ab66b98
+  tag: 41545ba3ac6b3095966316a99883d678b5ab8da8
   subdir:
     base-deriving-via
     binary
     binary/test
     cardano-crypto-class
     cardano-crypto-praos
+    cardano-crypto-tests
     measures
     orphans-deriving-via
     slotting
@@ -25,43 +28,53 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/cardano-crypto
-  tag: 07397f0e50da97eaa0575d93bee7ac4b2b2576ec
+  tag: f73079303f663e028288f9f4a9e08bcca39a923e
 
 source-repository-package
   type: git
-  location: https://github.com/input-output-hk/cardano-ledger-specs
-  tag: bf008ce028751cae9fb0b53c3bef20f07c06e333
+  location: https://github.com/input-output-hk/cardano-ledger
+  tag: 1a9ec4ae9e0b09d54e49b2a40c4ead37edadcce5
   subdir:
-    byron/ledger/impl
-    cardano-ledger-core
-    cardano-protocol-tpraos
     eras/alonzo/impl
+    eras/alonzo/test-suite
     eras/byron/chain/executable-spec
     eras/byron/crypto
     eras/byron/crypto/test
     eras/byron/ledger/executable-spec
+    eras/byron/ledger/impl
     eras/byron/ledger/impl/test
-    eras/shelley/chain-and-ledger/executable-spec
-    eras/shelley/impl
     eras/shelley-ma/impl
+    eras/shelley-ma/test-suite
+    eras/shelley/impl
+    eras/shelley/test-suite
+    libs/cardano-data
+    libs/cardano-ledger-core
+    libs/cardano-ledger-pretty
+    libs/cardano-protocol-tpraos
+    libs/compact-map
     libs/non-integral
-    semantics/executable-spec
-    semantics/small-steps-test
+    libs/set-algebra
+    libs/small-steps
+    libs/small-steps-test
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/cardano-node
-  tag: b6ca519f97a0e795611a63174687e6bb70c9f752
+  tag: 814df2c146f5d56f8c35a681fe75e85b905aed5d
   subdir:
     cardano-api
     cardano-cli
-    cardano-config
     cardano-node
 
 source-repository-package
   type: git
+  location: https://github.com/input-output-hk/cardano-config
+  tag: e9de7a2cf70796f6ff26eac9f9540184ded0e4e6
+
+source-repository-package
+  type: git
   location: https://github.com/input-output-hk/cardano-prelude
-  tag: c7fc9fba236972c27a55e0f3d34c2758cf616bfc
+  tag: bb4ed71ba8e587f672d06edf9d2e376f4b055555
   subdir:
     cardano-prelude
     cardano-prelude-test
@@ -69,18 +82,23 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/cardano-wallet
-  tag: 0c1daac2cb13e45c2241f90fa76267fc5ea7a9a1
+  tag: 5ad348d26313363bacec061ee963c89fd9d467b8
   subdir:
+    lib/cli
     lib/core
+    lib/core-integration
+    lib/dbvar
+    lib/launcher
     lib/numeric
+    lib/shelley
     lib/strict-non-empty-containers
-    lib/text-class
     lib/test-utils
+    lib/text-class
 
 source-repository-package
   type: git
   location: https://github.com/Quid2/flat.git
-  tag: d32c2c0c0c3c38c41177684ade9febe92d279b06
+  tag: ee59880f47ab835dbd73bea0847dab7869fc20d8
 
 source-repository-package
   type: git
@@ -108,7 +126,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/ouroboros-network
-  tag: 7d65c5dac5ecd8170464c841e892b8ceb89e99c6
+  tag: d2d219a86cda42787325bb8c20539a75c2667132
   subdir:
     io-classes
     io-sim
@@ -118,9 +136,12 @@ source-repository-package
     ouroboros-consensus
     ouroboros-consensus-byron
     ouroboros-consensus-cardano
+    ouroboros-consensus-protocol
     ouroboros-consensus-shelley
     ouroboros-network
     ouroboros-network-framework
+    ouroboros-network-testing
+    strict-stm
     typed-protocols
     typed-protocols-cborg
     typed-protocols-examples
@@ -128,7 +149,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/plutus
-  tag: 3f089ccf0ca746b399c99afe51e063b0640af547
+  tag: cc72a56eafb02333c96f662581b57504f8f8992f
   subdir:
     plutus-core
     plutus-ledger-api
@@ -139,38 +160,44 @@ source-repository-package
 
 source-repository-package
   type: git
-  location: https://github.com/input-output-hk/plutus-apps
-  tag: ecc528ec38f42dee056ccb072abd41a64b640425
+  location: https://github.com/MELD-labs/plutus-apps
+  tag: 2f1e335dd2ec4689077c80fd26c24e3842ad1aa4
   subdir:
     freer-extras
     playground-common
     plutus-chain-index
+    plutus-chain-index-core
     plutus-contract
     plutus-ledger
+    plutus-ledger-constraints
     plutus-pab
+    plutus-pab-executables
     plutus-use-cases
     quickcheck-dynamic
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/purescript-bridge.git
-  tag: 6a92d7853ea514be8b70bab5e72077bf5a510596
+  tag: 47a1f11825a0f9445e0f98792f79172efef66c00
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/servant-purescript
-  tag: a0c7c7e37c95564061247461aef4be505a853538
+  tag: 44e7cacf109f84984cd99cd3faf185d161826963
 
 source-repository-package
   type: git
   location: https://github.com/input-output-hk/Win32-network
   tag: 3825d3abf75f83f406c1f7161883c438dac7277d
 
-allow-newer:
-  size-based:template-haskell
-
 package cardano-crypto-praos
   flags: -external-libsodium-vrf
+
+package *
+  haddock-options: --ignore-all-exports "--optghc=-fplugin-opt PlutusTx.Plugin:defer-errors"
+
+allow-newer:
+  size-based:template-haskell
 
 constraints:
   hashable < 1.3.4
