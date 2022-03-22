@@ -161,7 +161,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/MELD-labs/plutus-apps
-  tag: 2f1e335dd2ec4689077c80fd26c24e3842ad1aa4
+  tag: 36a74175e64e4e044739cb909cc1cadff3c2cd47
   subdir:
     freer-extras
     playground-common
